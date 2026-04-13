@@ -135,6 +135,16 @@ namespace UW2Mod
         private int savedCombatSceneIndex = -1;    // persisted — build index of that scene
         private bool combatSceneAutoLoaded = false; // true once we've auto-loaded on startup
 
+        // === HOSTILE SKIES MUSIC ===
+        private GameObject hsMusicObject = null;
+        private AudioSource hsMusicSource = null;
+        private List<AudioClip> hsMusicClips = new List<AudioClip>();
+        private int hsMusicCurrentTrack = 0;
+        private bool hsMusicLoaded = false;
+        private bool hsMusicPlaying = false;
+        private float hsMusicVolume = 0.5f;
+        private float originalBGMVolume = -1f; // -1 = not stored yet
+
         // === HOSTILE SKIES ===
         private bool hostileSkiesActive = false;
         private int threatLevel = 1;
@@ -1091,6 +1101,7 @@ namespace UW2Mod
 
                 // Drone AI — chase and attack player
                 try { UpdateDrones(); } catch { }
+                try { UpdateHSMusic(); } catch { }
 
                 // Hostile Skies — zone-based combat encounters
                 try { UpdateHostileSkies(); } catch { }
@@ -2926,6 +2937,39 @@ namespace UW2Mod
             B("ALL OUT WAR (15 fighters)", () => { StartBattleMode("allout"); });
             B("End Battle", () => { ClearCombatants(); activeDrones.Clear(); combatModeName = "OFF"; combatSpawnInterval = 0; SetStatus("Battle ended"); });
 
+            H($"--- MUSIC [{(hsMusicPlaying ? "HOSTILE SKIES" : "ORIGINAL")}] ---");
+            if (!hsMusicPlaying)
+            {
+                B("Switch to Hostile Skies Music", () => { PlayHSMusic(); });
+            }
+            else
+            {
+                B("Switch to Original Music", () => { StopHSMusic(); });
+                string trackName = "?";
+                try { if (hsMusicClips.Count > 0 && hsMusicCurrentTrack < hsMusicClips.Count) trackName = hsMusicClips[hsMusicCurrentTrack].name; } catch { }
+                H($"  Now playing: {trackName}");
+                B("Next Track", () => {
+                    if (hsMusicClips.Count == 0) return;
+                    hsMusicCurrentTrack = (hsMusicCurrentTrack + 1) % hsMusicClips.Count;
+                    hsMusicSource.clip = hsMusicClips[hsMusicCurrentTrack];
+                    hsMusicSource.Play();
+                    SetStatus($"Playing: {hsMusicClips[hsMusicCurrentTrack].name}");
+                });
+                B("Previous Track", () => {
+                    if (hsMusicClips.Count == 0) return;
+                    hsMusicCurrentTrack = (hsMusicCurrentTrack - 1 + hsMusicClips.Count) % hsMusicClips.Count;
+                    hsMusicSource.clip = hsMusicClips[hsMusicCurrentTrack];
+                    hsMusicSource.Play();
+                    SetStatus($"Playing: {hsMusicClips[hsMusicCurrentTrack].name}");
+                });
+            }
+            B($"Volume: {(int)(hsMusicVolume * 100)}%", () => {
+                hsMusicVolume += 0.1f;
+                if (hsMusicVolume > 1.0f) hsMusicVolume = 0.1f;
+                if (hsMusicSource != null) hsMusicSource.volume = hsMusicVolume;
+                SetStatus($"Music volume: {(int)(hsMusicVolume * 100)}%");
+            });
+
             H($"--- HOSTILE SKIES (prefabs: {(enemyPrefabsReady ? "READY" : "not loaded — play a combat mission!")}) ---");
             if (enemyPrefabsReady)
             {
@@ -3892,6 +3936,174 @@ namespace UW2Mod
             {
                 LoggerInstance.Error($"[COMBAT] SpawnEnemyFighter: {ex}");
                 SetStatus($"Spawn failed: {ex.Message}");
+            }
+        }
+
+        // ================================================================
+        // HOSTILE SKIES MUSIC SYSTEM
+        // ================================================================
+        private void LoadHSMusic()
+        {
+            if (hsMusicLoaded && hsMusicClips.Count > 0) { SetStatus($"Music already loaded ({hsMusicClips.Count} tracks)"); return; }
+
+            string musicPath = Path.Combine(MelonEnvironment.GameRootDirectory, "UserData", "HostileSkies", "Music");
+            if (!Directory.Exists(musicPath))
+            {
+                SetStatus("No music folder — create UserData/HostileSkies/Music/ and add .ogg files");
+                return;
+            }
+
+            var oggFiles = Directory.GetFiles(musicPath, "*.ogg");
+            if (oggFiles.Length == 0)
+            {
+                SetStatus("No .ogg files found in HostileSkies/Music/");
+                return;
+            }
+
+            LoggerInstance.Msg($"[MUSIC] Found {oggFiles.Length} OGG files, loading...");
+            hsMusicClips.Clear();
+
+            // Create persistent audio source
+            if (hsMusicObject == null)
+            {
+                hsMusicObject = new GameObject("HS_MusicPlayer");
+                UnityEngine.Object.DontDestroyOnLoad(hsMusicObject);
+                hsMusicSource = hsMusicObject.AddComponent<AudioSource>();
+                hsMusicSource.loop = false;
+                hsMusicSource.playOnAwake = false;
+                hsMusicSource.volume = hsMusicVolume;
+                hsMusicSource.spatialBlend = 0f; // 2D audio — no spatialization
+                LoggerInstance.Msg("[MUSIC] Created HS_MusicPlayer AudioSource");
+            }
+
+            // Load each OGG file
+            foreach (var file in oggFiles)
+            {
+                try
+                {
+                    string fileName = Path.GetFileName(file);
+                    string fileUri = "file:///" + file.Replace("\\", "/").Replace(" ", "%20");
+
+                    // Use synchronous WWW-style loading via AudioClip
+                    // UnityWebRequest needs coroutines, so we use the older approach
+                    var www = UnityEngine.Networking.UnityWebRequestMultimedia.GetAudioClip(fileUri, AudioType.OGGVORBIS);
+                    var op = www.SendWebRequest();
+
+                    // Spin-wait for load (these are local files, should be near-instant)
+                    int timeout = 0;
+                    while (!op.isDone && timeout < 500) { System.Threading.Thread.Sleep(10); timeout++; }
+
+                    if (www.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
+                    {
+                        var clip = UnityEngine.Networking.DownloadHandlerAudioClip.GetContent(www);
+                        if (clip != null)
+                        {
+                            clip.name = Path.GetFileNameWithoutExtension(file);
+                            hsMusicClips.Add(clip);
+                            LoggerInstance.Msg($"[MUSIC]   Loaded: '{clip.name}' ({clip.length:F1}s)");
+                        }
+                    }
+                    else
+                    {
+                        LoggerInstance.Msg($"[MUSIC]   Failed: '{fileName}' — {www.error}");
+                    }
+                    www.Dispose();
+                }
+                catch (Exception ex) { LoggerInstance.Msg($"[MUSIC]   Error: {ex.Message}"); }
+            }
+
+            hsMusicLoaded = hsMusicClips.Count > 0;
+            LoggerInstance.Msg($"[MUSIC] Loaded {hsMusicClips.Count}/{oggFiles.Length} tracks");
+            SetStatus($"Loaded {hsMusicClips.Count} music tracks");
+        }
+
+        private void PlayHSMusic()
+        {
+            if (!hsMusicLoaded || hsMusicClips.Count == 0) { LoadHSMusic(); if (!hsMusicLoaded) return; }
+
+            // Mute original BGM
+            try
+            {
+                var bgm = Resources.FindObjectsOfTypeAll<Il2CppAudio.Music.BGMPlayer>();
+                if (bgm != null && bgm.Length > 0)
+                {
+                    // Get the game's audio sources and store/mute them
+                    for (int i = 0; i < bgm.Length; i++)
+                    {
+                        try
+                        {
+                            var officeChannel = bgm[i].m_officeChannel;
+                            var islandChannel = bgm[i].m_islandChannel;
+                            if (officeChannel != null)
+                            {
+                                if (originalBGMVolume < 0) originalBGMVolume = officeChannel.volume;
+                                officeChannel.volume = 0f;
+                            }
+                            if (islandChannel != null)
+                            {
+                                islandChannel.volume = 0f;
+                            }
+                        }
+                        catch { }
+                    }
+                    LoggerInstance.Msg("[MUSIC] Original BGM muted");
+                }
+            }
+            catch { }
+
+            // Shuffle and play
+            if (hsMusicClips.Count > 1)
+                hsMusicCurrentTrack = UnityEngine.Random.Range(0, hsMusicClips.Count);
+
+            hsMusicSource.clip = hsMusicClips[hsMusicCurrentTrack];
+            hsMusicSource.volume = hsMusicVolume;
+            hsMusicSource.Play();
+            hsMusicPlaying = true;
+            LoggerInstance.Msg($"[MUSIC] Playing: '{hsMusicClips[hsMusicCurrentTrack].name}'");
+            SetStatus($"Playing: {hsMusicClips[hsMusicCurrentTrack].name}");
+        }
+
+        private void StopHSMusic()
+        {
+            if (hsMusicSource != null && hsMusicSource.isPlaying)
+                hsMusicSource.Stop();
+            hsMusicPlaying = false;
+
+            // Restore original BGM
+            try
+            {
+                var bgm = Resources.FindObjectsOfTypeAll<Il2CppAudio.Music.BGMPlayer>();
+                if (bgm != null && bgm.Length > 0)
+                {
+                    for (int i = 0; i < bgm.Length; i++)
+                    {
+                        try
+                        {
+                            var officeChannel = bgm[i].m_officeChannel;
+                            var islandChannel = bgm[i].m_islandChannel;
+                            float restoreVol = originalBGMVolume > 0 ? originalBGMVolume : 1f;
+                            if (officeChannel != null) officeChannel.volume = restoreVol;
+                            if (islandChannel != null) islandChannel.volume = restoreVol;
+                        }
+                        catch { }
+                    }
+                    LoggerInstance.Msg("[MUSIC] Original BGM restored");
+                }
+            }
+            catch { }
+
+            SetStatus("Music: Original");
+        }
+
+        private void UpdateHSMusic()
+        {
+            // Auto-advance to next track when current one finishes
+            if (hsMusicPlaying && hsMusicSource != null && !hsMusicSource.isPlaying && hsMusicClips.Count > 0)
+            {
+                hsMusicCurrentTrack = (hsMusicCurrentTrack + 1) % hsMusicClips.Count;
+                hsMusicSource.clip = hsMusicClips[hsMusicCurrentTrack];
+                hsMusicSource.Play();
+                LoggerInstance.Msg($"[MUSIC] Next track: '{hsMusicClips[hsMusicCurrentTrack].name}'");
             }
         }
 

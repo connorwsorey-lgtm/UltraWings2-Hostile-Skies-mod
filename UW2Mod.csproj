@@ -72,6 +72,18 @@
       <HintPath>$(Il2CppDir)\UnityEngine.AnimationModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>$(Il2CppDir)\UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestAudioModule">
+      <HintPath>$(Il2CppDir)\UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppSystem">
+      <HintPath>$(Il2CppDir)\Il2CppSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- Game assembly - for accessing game types directly -->
     <Reference Include="Assembly-CSharp">
       <HintPath>$(Il2CppDir)\Assembly-CSharp.dll</HintPath>
