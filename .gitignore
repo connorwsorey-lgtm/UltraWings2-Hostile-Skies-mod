@@ -1,0 +1,8 @@
+bin/
+obj/
+*.bak
+*.bak.txt
+*.cs.txt
+.claude/
+.claude*
+CLAUDE.md
